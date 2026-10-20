@@ -19,6 +19,7 @@
             height: 100%;
             overflow: hidden;
             background: #000;
+            touch-action: pan-y;
         }
 
         #board {
@@ -30,6 +31,59 @@
             margin: 0;
             padding: 0;
         }
+
+        /*
+           Transparent layer that detects gestures.
+
+           It sits above the departure board, allowing swipes
+           and taps to be detected across the whole screen.
+        */
+        #gestureLayer {
+            position: fixed;
+            inset: 0;
+            z-index: 10;
+            background: transparent;
+            touch-action: none;
+            cursor: grab;
+        }
+
+        #gestureLayer:active {
+            cursor: grabbing;
+        }
+
+        /*
+           Brief visual indicator after changing boards.
+        */
+        #pageIndicator {
+            position: fixed;
+            bottom: 18px;
+            left: 50%;
+            z-index: 20;
+            transform: translateX(-50%);
+            display: flex;
+            gap: 10px;
+            padding: 8px 12px;
+            border-radius: 20px;
+            background: rgba(0, 0, 0, 0.55);
+            opacity: 0;
+            transition: opacity 0.25s ease;
+            pointer-events: none;
+        }
+
+        #pageIndicator.visible {
+            opacity: 1;
+        }
+
+        .dot {
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            background: rgba(255, 255, 255, 0.4);
+        }
+
+        .dot.active {
+            background: #fff;
+        }
     </style>
 </head>
 
@@ -40,53 +94,252 @@
         title="Brighton train departures"
     ></iframe>
 
+    <div
+        id="gestureLayer"
+        aria-label="Swipe left or right to change departure board"
+    ></div>
+
+    <div id="pageIndicator" aria-hidden="true">
+        <span class="dot active"></span>
+        <span class="dot"></span>
+    </div>
+
     <script>
         const pages = [
             "https://tiger.worldline.global/BRGHTN/ciss;graphic=1",
             "https://tiger.worldline.global/BRGHLRD/ciss;graphic=1"
         ];
 
+        // Automatic change after 20 seconds
         const switchDelay = 20000;
+
+        // Minimum horizontal movement required for a swipe
+        const swipeThreshold = 60;
+
+        // Vertical movement must remain below this amount
+        const verticalTolerance = 100;
 
         let currentPage = 0;
         let switchTimer = null;
 
-        const board = document.getElementById("board");
+        let startX = 0;
+        let startY = 0;
+        let isTracking = false;
 
-        function showPage(index) {
-            board.src = pages[index];
+        let indicatorTimer = null;
+
+        const board = document.getElementById("board");
+        const gestureLayer = document.getElementById("gestureLayer");
+        const pageIndicator = document.getElementById("pageIndicator");
+        const dots = document.querySelectorAll(".dot");
+
+
+        function showPage(index, showIndicator = true) {
+            currentPage = index;
+            board.src = pages[currentPage];
+
+            updateIndicator();
+
+            if (showIndicator) {
+                displayIndicator();
+            }
         }
 
-        function switchPage() {
-            currentPage = (currentPage + 1) % pages.length;
-            showPage(currentPage);
+
+        function showNextPage() {
+            const nextPage = (currentPage + 1) % pages.length;
+            showPage(nextPage);
             resetTimer();
         }
 
-        function resetTimer() {
-            clearTimeout(switchTimer);
-            switchTimer = setTimeout(switchPage, switchDelay);
+
+        function showPreviousPage() {
+            const previousPage =
+                (currentPage - 1 + pages.length) % pages.length;
+
+            showPage(previousPage);
+            resetTimer();
         }
 
-        const interactionEvents = [
-            "touchstart",
-            "touchmove",
-            "pointerdown",
-            "pointermove",
-            "wheel",
-            "mousedown",
-            "keydown"
-        ];
 
-        interactionEvents.forEach(function (eventName) {
-            document.addEventListener(
-                eventName,
-                resetTimer,
-                true
+        function automaticSwitch() {
+            showNextPage();
+        }
+
+
+        function resetTimer() {
+            clearTimeout(switchTimer);
+
+            switchTimer = setTimeout(
+                automaticSwitch,
+                switchDelay
             );
-        });
+        }
 
-        showPage(currentPage);
+
+        function updateIndicator() {
+            dots.forEach(function (dot, index) {
+                dot.classList.toggle(
+                    "active",
+                    index === currentPage
+                );
+            });
+        }
+
+
+        function displayIndicator() {
+            clearTimeout(indicatorTimer);
+
+            pageIndicator.classList.add("visible");
+
+            indicatorTimer = setTimeout(function () {
+                pageIndicator.classList.remove("visible");
+            }, 1200);
+        }
+
+
+        function beginGesture(x, y) {
+            startX = x;
+            startY = y;
+            isTracking = true;
+
+            // Any interaction restarts the 20-second timer.
+            resetTimer();
+        }
+
+
+        function endGesture(x, y) {
+            if (!isTracking) {
+                return;
+            }
+
+            isTracking = false;
+
+            const horizontalDistance = x - startX;
+            const verticalDistance = y - startY;
+
+            const isHorizontalSwipe =
+                Math.abs(horizontalDistance) >= swipeThreshold &&
+                Math.abs(verticalDistance) <= verticalTolerance;
+
+            if (!isHorizontalSwipe) {
+                // A tap or small movement still resets the timer.
+                resetTimer();
+                return;
+            }
+
+            if (horizontalDistance < 0) {
+                // Swipe left: next board.
+                showNextPage();
+            } else {
+                // Swipe right: previous board.
+                showPreviousPage();
+            }
+        }
+
+
+        /*
+           Touchscreen controls
+        */
+
+        gestureLayer.addEventListener(
+            "touchstart",
+            function (event) {
+                const touch = event.changedTouches[0];
+
+                beginGesture(
+                    touch.clientX,
+                    touch.clientY
+                );
+            },
+            { passive: true }
+        );
+
+
+        gestureLayer.addEventListener(
+            "touchend",
+            function (event) {
+                const touch = event.changedTouches[0];
+
+                endGesture(
+                    touch.clientX,
+                    touch.clientY
+                );
+            },
+            { passive: true }
+        );
+
+
+        gestureLayer.addEventListener(
+            "touchcancel",
+            function () {
+                isTracking = false;
+                resetTimer();
+            },
+            { passive: true }
+        );
+
+
+        /*
+           Mouse controls for testing on a PC
+        */
+
+        gestureLayer.addEventListener(
+            "mousedown",
+            function (event) {
+                beginGesture(
+                    event.clientX,
+                    event.clientY
+                );
+            }
+        );
+
+
+        gestureLayer.addEventListener(
+            "mouseup",
+            function (event) {
+                endGesture(
+                    event.clientX,
+                    event.clientY
+                );
+            }
+        );
+
+
+        gestureLayer.addEventListener(
+            "mouseleave",
+            function () {
+                if (isTracking) {
+                    isTracking = false;
+                    resetTimer();
+                }
+            }
+        );
+
+
+        /*
+           Keyboard controls for testing on a PC
+        */
+
+        document.addEventListener(
+            "keydown",
+            function (event) {
+                if (event.key === "ArrowLeft") {
+                    showPreviousPage();
+                }
+
+                if (event.key === "ArrowRight") {
+                    showNextPage();
+                }
+            }
+        );
+
+
+        /*
+           Start the display
+        */
+
+        showPage(0, false);
         resetTimer();
     </script>
 
